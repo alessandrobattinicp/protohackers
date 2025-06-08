@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 #[derive(Deserialize, Debug)]
 struct Request {
@@ -16,47 +15,48 @@ struct Response {
     prime: bool,
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:5001").await?;
+fn main() {
+    let listener = TcpListener::bind("0.0.0.0:5001").unwrap();
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(handle_connection(stream));
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                thread::spawn(move || handle_connection(stream));
             }
             Err(e) => {
                 println!("Error: {}", e);
-                continue;
             }
         }
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream) {
     let mut buffer: [u8; 512] = [0; 512];
     loop {
-        match stream.read(&mut buffer).await {
+        match stream.read(&mut buffer) {
             Ok(size) if size != 0 => {
                 match serde_json::from_slice::<Request>(&buffer[..size]) {
                     Ok(request) => {
-                        println!("{:?}",request);
+                        println!("{:?}", request);
                         if request.method != "isPrime" {
                             println!("richiesta malformata, {:?}", request);
-                            let _ = stream.write("malformed".as_bytes()).await;
+                            let _ = stream.write("malformed".as_bytes());
                             return;
                         }
                         let is_prime = check_if_prime(request.number).unwrap();
-                        let response = Response {method:"isPrime".to_string(), prime: is_prime};
-                        let _ = stream.write(serde_json::to_string(&response).unwrap().as_bytes()).await;
+                        let response = Response {
+                            method: "isPrime".to_string(),
+                            prime: is_prime,
+                        };
+                        let _ = stream.write(serde_json::to_string(&response).unwrap().as_bytes());
                     }
                     Err(_) => {
-                        let _ = stream.write("malformed".as_bytes()).await;
+                        let _ = stream.write("malformed".as_bytes());
                         return;
                     }
                 };
 
-                if let Err(e) = stream.write_all(&buffer[..size]).await {
+                if let Err(e) = stream.write_all(&buffer[..size]) {
                     eprintln!("Error writing to socket: {}", e);
                 }
             }
