@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
 #[derive(Deserialize, Debug)]
 struct Request {
     method: String,
-    number: i32,
+    number: f64,
 }
 
 #[derive(Serialize)]
@@ -30,68 +31,110 @@ fn main() {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let mut buffer: [u8; 512] = [0; 512];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(size) if size != 0 => {
-                match serde_json::from_slice::<Request>(&buffer[..size]) {
-                    Ok(request) => {
-                        println!("{:?}", request);
-                        if request.method != "isPrime" {
-                            println!("richiesta malformata, {:?}", request);
-                            let _ = stream.write("malformed".as_bytes());
-                            return;
-                        }
-                        let is_prime = check_if_prime(request.number).unwrap();
-                        let response = Response {
-                            method: "isPrime".to_string(),
-                            prime: is_prime,
-                        };
-                        let _ = stream.write(serde_json::to_string(&response).unwrap().as_bytes());
-                    }
-                    Err(_) => {
-                        let _ = stream.write("malformed".as_bytes());
-                        return;
-                    }
-                };
+fn handle_connection(stream: TcpStream) {
+    let mut reader = BufReader::new(&stream);
+    let mut writer = stream.try_clone().expect("Failed to clone stream");
+    let mut line = String::new();
 
-                if let Err(e) = stream.write_all(&buffer[..size]) {
-                    eprintln!("Error writing to socket: {}", e);
-                }
-            }
-            Ok(_) => {
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
                 println!("Connection closed");
                 return;
             }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                match serde_json::from_str::<Request>(trimmed) {
+                    Ok(request) => {
+                        println!("{:?}", request);
+                        if request.method != "isPrime" {
+                            println!("Invalid method: {:?}", request.method);
+                            send_malformed_response(&mut writer);
+                            return;
+                        }
+
+                        let is_prime = check_if_prime(request.number);
+                        let response = Response {
+                            method: String::from("isPrime"),
+                            prime: is_prime,
+                        };
+
+                        let response_json = serde_json::to_string(&response).unwrap();
+                        println!("RES: {:?}", response_json);
+                        if writer.write_all(response_json.as_bytes()).is_err() {
+                            return;
+                        }
+                        if writer.write_all(b"\n").is_err() {
+                            return;
+                        }
+                        if writer.flush().is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        println!("Malformed JSON");
+                        send_malformed_response(&mut writer);
+                        return;
+                    }
+                }
+            }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error reading from socket: {}", e);
                 return;
             }
         }
     }
 }
 
-fn check_if_prime(number: i32) -> Option<bool> {
-    if number < 2 {
-        return Some(false);
-    }
-    let has_divisor = (2..=number / 2).any(|x| number % x == 0);
-    Some(!has_divisor)
+fn send_malformed_response(writer: &mut TcpStream) {
+    let malformed = json!({"error": "malformed"});
+    let _ = writer.write_all(malformed.to_string().as_bytes());
+    let _ = writer.write_all(b"\n");
+    let _ = writer.flush();
 }
+
+fn check_if_prime(number: f64) -> bool {
+    // Non-integers cannot be prime
+    if number.fract() != 0.0 {
+        return false;
+    }
+
+    let n = number as i64;
+
+    // Numbers less than 2 are not prime
+    if n < 2 {
+        return false;
+    }
+
+    // Check for divisors up to sqrt(n)
+    let sqrt_n = (n as f64).sqrt() as i64;
+    for i in 2..=sqrt_n {
+        if n % i == 0 {
+            return false;
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn it_works() {
-        let result = check_if_prime(4).unwrap();
-        assert_eq!(result, false);
-        let result = check_if_prime(13).unwrap();
-        assert_eq!(result, true);
-        let result = check_if_prime(144).unwrap();
-        assert_eq!(result, false);
-        let result = check_if_prime(7789).unwrap();
-        assert_eq!(result, true);
+        assert_eq!(check_if_prime(4.0), false);
+        assert_eq!(check_if_prime(-3.0), false); // Negative numbers are not prime
+        assert_eq!(check_if_prime(13.0), true);
+        assert_eq!(check_if_prime(144.0), false);
+        assert_eq!(check_if_prime(7789.0), true);
+        assert_eq!(check_if_prime(2.5), false); // Non-integers are not prime
+        assert_eq!(check_if_prime(1.0), false);
+        assert_eq!(check_if_prime(2.0), true);
     }
 }
