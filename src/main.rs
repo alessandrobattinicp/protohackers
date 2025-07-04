@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::iter::Sum;
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
@@ -11,12 +12,12 @@ enum OperationType {
 
 struct InsertStruct {
     timestamp: i32,
-    price: i32
+    price: i32,
 }
 
 struct QueryStruct {
     mintime: i32,
-    maxtime: i32
+    maxtime: i32,
 }
 
 fn main() {
@@ -36,49 +37,62 @@ fn main() {
 
 fn handle_connection(stream: TcpStream) {
     println!("Un client si è connesso");
+    let mut packets: Vec<InsertStruct> = Vec::new();
+
     let connection_stream = stream.try_clone().unwrap();
     let mut reader = BufReader::new(&connection_stream);
     let mut writer = BufWriter::new(&connection_stream);
     loop {
-        let mut buffer:[u8;9] = [0;9];
-        match reader.read(&mut buffer) {
-            Ok(size) if size != 0 => {
-                println!("Ricevuto: {:02X}, {:?}", buffer[0], buffer);
-                match buffer.parse() {
-                    OperationType::Insert(insert) => {
-                        println!("Insert: timestamp={}, price={}", insert.timestamp, insert.price);
-                        // Here you would handle the insert operation, e.g., store it in a database
-                        //writer.write_all(b"Insert received\n").unwrap();
-                    }
-                    OperationType::Query(query) => {
-                        println!("Query: mintime={}, maxtime={}", query.mintime, query.maxtime);
-                        // Here you would handle the query operation, e.g., retrieve data from a database
-                        //writer.write_all(b"Query received\n").unwrap();
-                    }
-                    OperationType::Unknown => {
-                        eprintln!("Unknown operation");
-                        //writer.write_all(b"Unknown operation\n").unwrap();
-                    }
+        let mut buffer: [u8; 9] = [0; 9];
+        match reader.read_exact(&mut buffer) {
+            Ok(()) => match buffer.parse() {
+                OperationType::Insert(insert) => {
+                    packets.push(insert);
                 }
-            }
-            Ok(_) => {
-                println!("Connection closed");
-                break;
-            }
+                OperationType::Query(query) => {
+                    println!(
+                        "Query: mintime={}, maxtime={}",
+                        query.mintime, query.maxtime
+                    );
+                    let avg: i32 = average(&packets, query.mintime, query.maxtime);
+                    let _ = writer.write_all(&avg.to_be_bytes());
+                }
+                OperationType::Unknown => {}
+            },
             Err(e) => {
                 eprintln!("Read error: {}", e);
                 break;
             }
         }
 
-        /*match writer.flush() {
+        match writer.flush() {
             Ok(_) => {}
             Err(e) => {
                 println!("errore di flush {:?}", e);
                 break;
             }
-        }*/
+        }
     }
+}
+
+fn average(packets: &Vec<InsertStruct>, mintime: i32, maxtime: i32) -> i32 {
+    if mintime > maxtime {
+        return 0;
+    }
+
+    let valid_packets: Vec<&InsertStruct> = packets
+        .iter()
+        .filter(|is| is.timestamp >= mintime && is.timestamp <= maxtime)
+        .collect();
+
+    let count = valid_packets.len();
+    let total: i64 = valid_packets.iter().map(|is| is.price as i64).sum();
+
+    if count == 0 {
+        return 0;
+    }
+
+    (total / count as i64) as i32
 }
 
 trait ParseOperation {
