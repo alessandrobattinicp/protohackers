@@ -1,41 +1,37 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::UdpSocket;
 use std::thread;
 
 fn main() {
-    let listener = TcpListener::bind("0.0.0.0:5001").unwrap();
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                println!("Incoming connection");
-                thread::spawn(move || handle_connection(stream));
-            }
-            Err(e) => {
-                println!("Error: {}", e);
-                continue;
-            }
-        }
-    }
-}
-
-fn handle_connection(mut stream: TcpStream) {
-    let mut buffer: [u8; 512] = [0; 512];
+    let socket = UdpSocket::bind("0.0.0.0:5001").unwrap();
+    let mut buf: [u8; 1024] = [0; 1024];
+    let mut database = HashMap::from([("version".to_string(), "CP client :D 1.0".to_string())]);
     loop {
-        match stream.read(&mut buffer) {
-            Ok(size) if size != 0 => {
-                if let Err(e) = stream.write_all(&buffer[..size]) {
-                    eprintln!("Error writing to socket: {}", e);
+        match socket.recv_from(&mut buf) {
+            Ok((s, sender)) => {
+                let mut msg: String = String::from_utf8_lossy(&buf).into(); //mucca munta
+                msg.truncate(s);
+                println!("Ricevuti {} bytes: {:?}", s, msg);
+
+                if msg.contains("=") {
+                    // inster impl
+                    let (key, value) = msg.split_once("=").unwrap();
+                    if key != "version" {
+                        database.insert(key.to_string(), value.to_string());
+                    }
+                } else {
+                    let _ = match database.get(&msg) {
+                        Some(value) => {
+                            println!("mandando dati: {}={}", msg, value);
+                            socket.send_to(format!("{}={}", msg, value).as_bytes(), sender)
+                        }
+                        None => socket.send_to("Not found".as_bytes(), sender),
+                    };
                 }
             }
-            Ok(_) => {
-                println!("Connection closed");
-                return;
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                return;
-            }
+
+            Err(e) => println!("ERR: {}", e),
         }
     }
 }
