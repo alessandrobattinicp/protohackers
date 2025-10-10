@@ -15,8 +15,8 @@ fn main() {
     for stream in listener.incoming() {
         let clients = Arc::clone(&clients);
         match stream {
-            Ok(streamz) => {
-                thread::spawn(move || handle_connection(streamz, clients));
+            Ok(stream) => {
+                thread::spawn(move || handle_connection(stream, clients));
             }
             Err(e) => {
                 println!("Tcp Error: {}", e);
@@ -40,21 +40,23 @@ fn handle_connection(stream: TcpStream, clients: Arc<Mutex<Vec<Client>>>) {
             println!("Nuova connessione ok");
         }
         Err(e) => {
-            println!("errore di flush {:?}", e);
+            println!("errore di flush 43 {:?}", e);
         }
     }
 
     // 2 - username
     let mut username: String = String::new();
     match reader.read_line(&mut username) {
-        Ok(size) if size != 0 => {
+        Ok(size) if size >= 2 => {
             let is_valid = validate_username(username.as_bytes());
             if !is_valid {
                 return;
             }
             println!("username: {:?}", username);
         }
-        Ok(_) => {}
+        Ok(_) => {
+            return;
+        }
         Err(e) => {
             eprintln!("Read error: {}", e);
         }
@@ -65,19 +67,18 @@ fn handle_connection(stream: TcpStream, clients: Arc<Mutex<Vec<Client>>>) {
         let mut names = Vec::<String>::new();
 
         for client in list.iter() {
-            println!("Sono nel for per il Join del secondo utente");
             names.push(client.username.clone());
             let connection_stream = client.stream.try_clone().unwrap();
 
             let mut writer = BufWriter::new(&connection_stream);
-            let _ = writer.write_all(format!("* {} has joined the room\n", username).as_bytes());
+            let _ = writer.write_all(format!("* room joined by {}", username).as_bytes());
             match writer.flush() {
                 Ok(_) => {
                     println!("Utente annunciato con:");
                     println!("* {} has joined the room\n", username);
                 }
                 Err(e) => {
-                    println!("errore di flush {:?}", e);
+                    println!("{} errore di flush 81 {:?}", username, e);
                 }
             }
         }
@@ -86,62 +87,63 @@ fn handle_connection(stream: TcpStream, clients: Arc<Mutex<Vec<Client>>>) {
         name_list.push_str(names.join(",").as_str());
         name_list.push('\n');
 
-        println!("Inizio annuncio");
-        print!("{}", name_list);
-        println!("Fine annuncio");
-
         let _ = writer.write_all(name_list.as_bytes());
         match writer.flush() {
             Ok(_) => {
                 println!("Invio lista utenti");
             }
             Err(e) => {
-                println!("errore di flush {:?}", e);
+                println!("errore di flush 96 {:?}", e);
             }
         }
 
-        /*
-
-                          [Fri Sep 26 15:52:03 2025 UTC] [1client.test] NOTE:check starts
-                [Fri Sep 26 15:52:03 2025 UTC] [1client.test] NOTE:connected to 93.66.32.222 port 5001
-                [Fri Sep 26 15:52:06 2025 UTC] [1client.test] PASS
-                [Fri Sep 26 15:52:07 2025 UTC] [2clients.test] NOTE:check starts
-                [Fri Sep 26 15:52:07 2025 UTC] [2clients.test] NOTE:watchman connected to 93.66.32.222 port 5001
-                [Fri Sep 26 15:52:07 2025 UTC] [2clients.test] NOTE:watchman joined the chat room
-                [Fri Sep 26 15:52:07 2025 UTC] [2clients.test] NOTE:alice connected to 93.66.32.222 port 5001
-                [Fri Sep 26 15:52:07 2025 UTC] [2clients.test] NOTE:bob connected to 93.66.32.222 port 5001
-                [Fri Sep 26 15:52:07 2025 UTC] [2clients.test] NOTE:alice joined the chat room
-        [Fri Sep 26 15:55:02 2025 UTC] [2clients.test] FAIL:message to 'watchman' was not correct (expected '[alice] I think I'm alone now'):  has joined the room
-
-                            */
-
         username.truncate(username.len() - 1);
-        list.push(Client { username, stream });
+        list.push(Client {
+            username: username.clone(),
+            stream,
+        });
     }
-
-    //3- avvisare gli altri client della connessione
-    // inviare il messaggio "username joins"
-    // inviare la lista dei presenti
 
     loop {
         let mut buffer: String = String::new();
         match reader.read_line(&mut buffer) {
-            Ok(size) if size != 0 => {
-                println!("ricevuto riga 115 {:?}", buffer);
+            Ok(size) if size > 0 => {
+                let mut list = clients.lock().unwrap();
+                for client in list.iter_mut() {
+                    if client.username != username {
+                        print!("{} > [{}] {}", client.username, username, buffer);
+                        let _ = client
+                            .stream
+                            .write_all(format!("[{}] {}", username, buffer).as_bytes());
+                    }
+                }
             }
             Ok(_) => {
-                // println!("ricevuto2 {:?}", buffer);
+                println!("Utente {} disconnesso", username);
+                let mut list = clients.lock().unwrap();
+
+                let pos = list.iter().position(|x| x.username == username).unwrap();
+                list.remove(pos);
+
+                for client in list.iter_mut() {
+                    let _ = client
+                        .stream
+                        .write_all(format!("* room left by {}\n", username).as_bytes());
+                    let _ = writer.flush();
+                }
+
+                return;
             }
             Err(e) => {
                 eprintln!("Read error: {}", e);
                 break;
             }
         }
-
+        // FAIL:server did not send 'ProtoBob51' the quit message for 'SlimyFrank231' within 10 seconds
         match writer.flush() {
             Ok(_) => {}
             Err(e) => {
-                println!("errore di flush {:?}", e);
+                println!("errore di flush 139 {:?}", e);
                 break;
             }
         }
@@ -149,10 +151,6 @@ fn handle_connection(stream: TcpStream, clients: Arc<Mutex<Vec<Client>>>) {
 }
 
 fn validate_username(str: &[u8]) -> bool {
-    if str.len() < 1 {
-        return false;
-    }
-
     for c in str[..str.len() - 1].iter() {
         if !is_uppercase(c) && !is_lowercase(c) && !is_digit(c) {
             return false;
