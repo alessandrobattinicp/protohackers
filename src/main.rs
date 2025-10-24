@@ -1,16 +1,8 @@
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
 use std::thread;
 
-use regex::Regex;
-
-/*
-[Fri Oct 17 15:50:56 2025 UTC] [4notbogus.test] NOTE:PinkFrank450 joined the chat room
-[Fri Oct 17 15:50:58 2025 UTC] [4notbogus.test] FAIL:message to 'GreenEdward629' was not correct
-    (expected '[PinkFrank450] This is a product ID, not a Boguscoin: 7BCO8HH82v42s1r7NvGVkELN1r-OI50f7pcgUDwwjk2cCsTAE3rrI-1234'):
-    [PinkFrank450] This is a product ID, not a Boguscoin: 7YWHMfk9JZe0LM0g1ZauHuiSxhI-OI50f7pcgUDwwjk2cCsTAE3rrI-1234
-*/
+use fancy_regex::Regex;
 
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:5001").unwrap();
@@ -90,26 +82,12 @@ fn handle_connection(client: TcpStream) {
     thread::spawn(move || handle_read(&mut client_read_clone, server_read_clone));
 }
 
-//7[a-zA-Z0-9]{25,35}[\s $]
 fn check_boguscoin_address(buffer: String) -> String {
-    let re = Regex::new(r"7[a-zA-Z0-9]{25,35}[\s $]/s").unwrap();
+    // let re = Regex::new(r"^7\w{23,33}[^\s-]\b").unwrap();
+    let re = Regex::new(r"\b(7[a-zA-Z0-9]{25,34})(?![\w-])").unwrap();
     let new_buffer: String = re
         .replace_all(buffer.as_str(), "7YWHMfk9JZe0LM0g1ZauHuiSxhI")
         .into_owned();
 
     new_buffer
 }
-
-//
-// fn check_boguscoin_address(buffer: String) -> String {
-//     let re_s = Regex::new(r"7[a-zA-Z0-9]{25,34}\s").unwrap();
-//     let re_ns = Regex::new(r"7[a-zA-Z0-9]{25,34}$").unwrap();
-
-//     let new_buffer: String = re_s
-//         .replace_all(buffer.as_str(), "7YWHMfk9JZe0LM0g1ZauHuiSxhI ")
-//         .into_owned();
-
-//     re_ns
-//         .replace_all(new_buffer.as_str(), "7YWHMfk9JZe0LM0g1ZauHuiSxhI")
-//         .into_owned()
-// }
