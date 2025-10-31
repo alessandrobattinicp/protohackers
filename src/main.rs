@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::iter::Sum;
 use std::net::{TcpListener, TcpStream};
-use std::thread;
+use std::{thread, vec};
 
 enum OperationType {
     Unknown,
@@ -35,6 +35,8 @@ fn main() {
     }
 }
 
+// FAIL:did not receive at least 5 heartbeats within 10 seconds (only got 0)
+
 fn handle_connection(stream: TcpStream) {
     println!("Un client si è connesso");
     let mut packets: Vec<InsertStruct> = Vec::new();
@@ -43,24 +45,31 @@ fn handle_connection(stream: TcpStream) {
     let mut reader = BufReader::new(&connection_stream);
     let mut writer = BufWriter::new(&connection_stream);
     loop {
-        let mut buffer: [u8; 9] = [0; 9];
-        match reader.read_exact(&mut buffer) {
-            Ok(()) => match buffer.parse() {
-                OperationType::Insert(insert) => {
-                    packets.push(insert);
+        let mut op_code: [u8; 1] = [0; 1];
+        match reader.read_exact(&mut op_code) {
+            Ok(()) => match op_code[0] {
+                0x10 => {}
+                0x20 => {
+                    let plate = parse_plate(&mut reader);
+                    println!("plate {:?}", plate);
                 }
-                OperationType::Query(query) => {
-                    println!(
-                        "Query: mintime={}, maxtime={}",
-                        query.mintime, query.maxtime
-                    );
-                    let avg: i32 = average(&packets, query.mintime, query.maxtime);
-                    let _ = writer.write_all(&avg.to_be_bytes());
+                0x21 => {}
+                0x40 => {
+                    let hb = parse_heart_beat(&mut reader);
+                    println!("heartbeat {:?}", hb);
+                    handle_heartbeat(hb, &connection_stream);
                 }
-                OperationType::Unknown => {}
+                0x80 => {
+                    let camera = parse_i_am_camera(&mut reader);
+                    println!("camera {:?}", camera);
+                }
+                0x81 => {}
+                _ => {
+                    // eprintln!("Unknown opcode {}", op_code[0]);
+                }
             },
             Err(e) => {
-                eprintln!("Read error: {}", e);
+                //eprintln!("Read error: {}", e);
                 break;
             }
         }
@@ -75,44 +84,73 @@ fn handle_connection(stream: TcpStream) {
     }
 }
 
-fn average(packets: &Vec<InsertStruct>, mintime: i32, maxtime: i32) -> i32 {
-    if mintime > maxtime {
-        return 0;
+fn parse_i_am_camera(reader: &mut BufReader<&TcpStream>) -> IAmCamera {
+    let mut data: [u8; 6] = [0; 6];
+    let _ = reader.read_exact(&mut data);
+
+    IAmCamera {
+        road: u16::from_be_bytes([data[0], data[1]]),
+        mile: u16::from_be_bytes([data[2], data[3]]),
+        limit: u16::from_be_bytes([data[4], data[5]]),
     }
-
-    let valid_packets: Vec<&InsertStruct> = packets
-        .iter()
-        .filter(|is| is.timestamp >= mintime && is.timestamp <= maxtime)
-        .collect();
-
-    let count = valid_packets.len();
-    let total: i64 = valid_packets.iter().map(|is| is.price as i64).sum();
-
-    if count == 0 {
-        return 0;
-    }
-
-    (total / count as i64) as i32
 }
 
-trait ParseOperation {
-    fn parse(&self) -> OperationType;
+fn parse_heart_beat(reader: &mut BufReader<&TcpStream>) -> HeartBeat {
+    let mut data: [u8; 4] = [0; 4];
+    let _ = reader.read_exact(&mut data);
+
+    HeartBeat {
+        interval: u32::from_be_bytes(data),
+    }
 }
 
-impl ParseOperation for [u8; 9] {
-    fn parse(&self) -> OperationType {
-        match self[0] as char {
-            'I' => {
-                let timestamp = i32::from_be_bytes([self[1], self[2], self[3], self[4]]);
-                let price = i32::from_be_bytes([self[5], self[6], self[7], self[8]]);
-                OperationType::Insert(InsertStruct { timestamp, price })
-            }
-            'Q' => {
-                let mintime = i32::from_be_bytes([self[1], self[2], self[3], self[4]]);
-                let maxtime = i32::from_be_bytes([self[5], self[6], self[7], self[8]]);
-                OperationType::Query(QueryStruct { mintime, maxtime })
-            }
-            _ => OperationType::Unknown,
-        }
+fn parse_plate(reader: &mut BufReader<&TcpStream>) -> Plate {
+    let mut plate_length: [u8; 1] = [0; 1];
+    let mut timestamp: [u8; 4] = [0; 4];
+    let _ = reader.read_exact(&mut plate_length);
+
+    let mut plate_vec: Vec<u8> = vec![0; plate_length[0] as usize];
+    let plate = plate_vec.as_mut_slice();
+
+    let _ = reader.read_exact(plate);
+    let _ = reader.read_exact(&mut timestamp);
+
+    Plate {
+        plate: str::from_utf8(plate).unwrap().to_string(),
+        timestamp: u32::from_be_bytes(timestamp),
     }
+}
+
+fn handle_heartbeat(hb: HeartBeat, stream: &TcpStream) {
+    if hb.interval > 0 {
+        let data = [0x41];
+        let tmp = stream.try_clone().unwrap();
+
+        thread::spawn(move || {
+            let mut writer = BufWriter::new(&tmp);
+            loop {
+                let _ = writer.write_all(&data);
+                let _ = writer.flush();
+                std::thread::sleep(std::time::Duration::from_millis(hb.interval as u64 * 100));
+            }
+        });
+    }
+}
+
+#[derive(Debug)]
+struct IAmCamera {
+    road: u16,
+    mile: u16,
+    limit: u16,
+}
+
+#[derive(Debug)]
+struct HeartBeat {
+    interval: u32,
+}
+
+#[derive(Debug)]
+struct Plate {
+    plate: String,
+    timestamp: u32,
 }
